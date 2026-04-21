@@ -71,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.GalleryEvent
 import com.google.ai.edge.gallery.R
 import com.google.ai.edge.gallery.common.AskInfoAgentAction
@@ -548,18 +549,28 @@ private fun resetSessionWithCurrentSkills(
 ) {
   val model = modelManagerViewModel.uiState.value.selectedModel
   val newSelectedSkills = skillManagerViewModel.getSelectedSkills()
-  viewModel.resetSession(
-    task = task,
-    model = model,
-    systemInstruction =
-      if (newSelectedSkills.isEmpty()) null
-      else skillManagerViewModel.getSystemPrompt(curSystemPrompt),
-    tools = listOf(tool(agentTools)),
-    supportImage = true,
-    supportAudio = true,
-    onDone = { onDone(model) },
-    enableConversationConstrainedDecoding = true,
-  )
+
+  viewModel.viewModelScope.launch {
+    val systemInstruction = if (newSelectedSkills.isEmpty()) {
+      null
+    } else {
+      skillManagerViewModel.getSystemPromptWithScriptResults(
+        baseSystemPrompt = curSystemPrompt,
+        agentTools = agentTools,
+      )
+    }
+
+    viewModel.resetSession(
+      task = task,
+      model = model,
+      systemInstruction = systemInstruction,
+      tools = listOf(tool(agentTools)),
+      supportImage = true,
+      supportAudio = true,
+      onDone = { onDone(model) },
+      enableConversationConstrainedDecoding = true,
+    )
+  }
 }
 
 class ChatWebViewJavascriptInterface {

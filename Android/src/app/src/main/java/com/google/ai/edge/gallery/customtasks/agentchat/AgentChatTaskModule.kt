@@ -34,6 +34,8 @@ import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class AgentChatTask @Inject constructor() : CustomTask {
   private val agentTools = AgentTools()
@@ -78,21 +80,33 @@ class AgentChatTask @Inject constructor() : CustomTask {
     onDone: (String) -> Unit,
   ) {
     agentTools.skillManagerViewModel.loadSkills {
-      LlmChatModelHelper.initialize(
-        context = context,
-        model = model,
-        supportImage = true,
-        supportAudio = true,
-        onDone = onDone,
-        systemInstruction =
+      coroutineScope.launch {
+        // Build the system instruction, running skill scripts if placeholders exist.
+        val systemInstructionContents =
           if (agentTools.skillManagerViewModel.getSelectedSkills().isEmpty()) {
             null
           } else {
-            agentTools.skillManagerViewModel.getSystemPrompt(task.defaultSystemPrompt)
-          },
-        tools = listOf(tool(agentTools)),
-        enableConversationConstrainedDecoding = true,
-      )
+            // Run scripts to fill placeholders.
+            withTimeoutOrNull(10000L) {
+              agentTools.skillManagerViewModel.getSystemPromptWithScriptResults(
+                baseSystemPrompt = task.defaultSystemPrompt,
+                agentTools = agentTools,
+                perScriptTimeoutMs = 3000L,
+              )
+            }
+          }
+
+        LlmChatModelHelper.initialize(
+          context = context,
+          model = model,
+          supportImage = true,
+          supportAudio = true,
+          onDone = onDone,
+          systemInstruction = systemInstructionContents,
+          tools = listOf(tool(agentTools)),
+          enableConversationConstrainedDecoding = true,
+        )
+      }
     }
   }
 

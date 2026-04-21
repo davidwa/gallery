@@ -52,11 +52,13 @@ import javax.inject.Inject
 import kotlin.collections.joinToString
 import kotlin.io.encoding.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "AGSkillManagerVM"
 
@@ -736,6 +738,55 @@ constructor(
     return this.getSelectedSkills().joinToString("\n") { skill ->
       "- ${skill.name}: ${skill.description}"
     }
+  }
+
+  /**
+   * Fill placeholders in baseSystemPrompt by running scripts for placeholders of form:
+   * ___SKILL_RESULT_<skillName>[:<scriptName>]___
+   *
+   * Example placeholders:
+   *   ___SKILL_RESULT_calculate-hash:system.js___
+   *   ___SKILL_RESULT_calculate-hash___ (uses default script "system.js")
+   */
+  suspend fun getSystemPromptWithScriptResults(
+    baseSystemPrompt: String,
+    agentTools: AgentTools,
+    perScriptTimeoutMs: Long = 3000L,
+    maxResultLength: Int = 1024,
+  ): Contents = coroutineScope {
+    val selectedSkillsNamesAndDescriptions = getSelectedSkillsNamesAndDescriptions()
+    var prompt = baseSystemPrompt.replace("___SKILLS___", selectedSkillsNamesAndDescriptions)
+
+    val regex = Regex("""___SKILL_RESULT_([a-zA-Z0-9\-_]+)(?::([a-zA-Z0-9\-_\.]+))?(?::(.*))?___""")
+    val matches = regex.findAll(prompt).toList()
+    if (matches.isEmpty()) {
+      return@coroutineScope Contents.of(prompt)
+    }
+
+    // Use sequential execution because the UI only has one WebView to run scripts.
+    for (match in matches) {
+      val skillName = match.groupValues[1]
+      val scriptName = match.groupValues.getOrNull(2).takeIf { it?.isNotEmpty() == true } ?: "system.js"
+      val inputData = match.groupValues.getOrNull(3).takeIf { it?.isNotEmpty() == true } ?: "{}"
+      val placeholder = match.value
+
+      Log.d(TAG, "Running script for placeholder: $placeholder")
+      val rawResult = withTimeoutOrNull(perScriptTimeoutMs) {
+        agentTools.runSkillScript(
+          skillName = skillName,
+          scriptName = scriptName,
+          inputData = inputData
+        )
+      }
+      if (rawResult == null) {
+        Log.w(TAG, "Script injection timed out for $placeholder. Is the chat screen active?")
+      }
+      val cleaned = (rawResult ?: "").replace("\n", " ").trim().take(maxResultLength)
+      val finalValue = if (cleaned.isBlank()) "<no-result>" else cleaned
+      prompt = prompt.replace(placeholder, finalValue)
+    }
+
+    return@coroutineScope Contents.of(prompt)
   }
 
   /**

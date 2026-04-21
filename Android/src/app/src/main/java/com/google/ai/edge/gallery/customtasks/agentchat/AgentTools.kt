@@ -41,7 +41,7 @@ class AgentTools() : ToolSet {
   lateinit var context: Context
   lateinit var skillManagerViewModel: SkillManagerViewModel
 
-  private val _actionChannel = Channel<AgentAction>(Channel.UNLIMITED)
+  internal val _actionChannel = Channel<AgentAction>(Channel.UNLIMITED)
   val actionChannel: ReceiveChannel<AgentAction> = _actionChannel
   var resultImageToShow: CallJsSkillResultImage? = null
   var resultWebviewToShow: CallJsSkillResultWebview? = null
@@ -256,10 +256,52 @@ class AgentTools() : ToolSet {
   }
 
   fun sendAgentAction(action: AgentAction) {
-    runBlocking(Dispatchers.Default) { _actionChannel.send(action) }
+    _actionChannel.trySend(action)
   }
 }
 
 fun getSkillSecretKey(skillName: String): String {
   return "skill___${skillName}"
+}
+
+// ---------------------------------------------------------------------
+// Skill script runner helper
+// ---------------------------------------------------------------------
+// Runs a skill script (via existing CallJsAgentAction / webview runner) and
+// returns the raw result string. Uses a timeout and swallows errors to avoid
+// blocking model initialization.
+suspend fun AgentTools.runSkillScript(
+  skillName: String,
+  scriptName: String = "system.js",
+  inputData: String = "{}",
+  timeoutMs: Long = 3000L,
+): String {
+  // Resolve the script URL using SkillManagerViewModel helper.
+  val url = skillManagerViewModel.getJsSkillUrl(skillName = skillName, scriptName = scriptName)
+    ?: return ""
+
+  val secret = "" // no secret by default; change if necessary
+
+  return try {
+    val action =
+      CallJsAgentAction(url = url, data = inputData.trim().ifEmpty { "{}" }, secret = secret)
+    _actionChannel.send(action)
+    // Wait for the result with timeout
+    val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { action.result.await() } ?: ""
+
+    // Try to parse result to CallJsSkillResult and extract the 'result' field.
+    val moshi: Moshi = Moshi.Builder().build()
+    val jsonAdapter: JsonAdapter<CallJsSkillResult> =
+      moshi.adapter(CallJsSkillResult::class.java).failOnUnknown()
+    val resultJson = runCatching { jsonAdapter.fromJson(result) }.getOrNull()
+
+    if (resultJson != null && resultJson.result != null) {
+      resultJson.result
+    } else {
+      result
+    }
+  } catch (e: Exception) {
+    Log.w(TAG, "runSkillScript failed for $skillName/$scriptName: ${e.message}", e)
+    ""
+  }
 }
